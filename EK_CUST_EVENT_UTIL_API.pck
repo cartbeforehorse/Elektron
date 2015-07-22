@@ -71,9 +71,10 @@ PROCEDURE Et_Reservation_Check;
 FUNCTION Et_Get_Email_By_WO (
    wo_no_     IN VARCHAR2,
    contract_  IN VARCHAR2 ) RETURN VARCHAR2;
-    
-FUNCTION Et_Get_Email_List (
-   group_id_  IN VARCHAR2 ) RETURN VARCHAR2;
+
+FUNCTION ET_GET_EMAIL_LIST(Group_Id IN VARCHAR2, Person_ID IN VARCHAR2) RETURN VARCHAR2;
+
+FUNCTION ET_GET_EMAIL_LIST2(step_no IN NUMBER, key_ref IN VARCHAR2) RETURN VARCHAR2;
 
 FUNCTION force_to_number (
    string_    IN VARCHAR2 ) RETURN NUMBER;
@@ -489,7 +490,7 @@ BEGIN
    Transaction_SYS.Deferred_Call('Ek_Cust_Event_Util_API.Et_Do_Release_Now', attr_, 'Release SO:'|| so_id_);
 END ET_SO_Release;
 
-
+-- this is not using but for the test
 PROCEDURE Et_Tool_Updated (
    --tool_ins_id_   IN VARCHAR2,
    contract_      IN VARCHAR2 )
@@ -498,7 +499,7 @@ IS
       SELECT  order_no, release_no, sequence_no
       FROM    shop_ord so
       WHERE   so.contract = contract_
-        AND   so.order_no = '46863' -- why is this hard-coded???
+        AND   so.order_no = '46863' 
         AND   so.state = 'Parked';
 BEGIN
    FOR i_ in get_parked_so LOOP
@@ -568,23 +569,75 @@ BEGIN
 END Et_Get_Cus_By_WO;
 
 
-FUNCTION Et_Get_Email_List (
-   group_id_  IN VARCHAR2 ) RETURN VARCHAR2
-IS
-   CURSOR get_list IS
-      SELECT wmsys.wm_concat (Fnd_User_Property_API.Get_Value (k.person_id, 'SMTP_MAIL_ADDRESS')) list_email
-      FROM   Document_Group_Members k
-      WHERE  k.group_id = group_id_;
-   emails_       VARCHAR2(500);
-   final_email_  VARCHAR2(500);
+FUNCTION ET_GET_EMAIL_LIST(Group_Id IN VARCHAR2, Person_ID IN VARCHAR2) RETURN VARCHAR2 IS
 
-BEGIN
-   OPEN  get_list;
-   FETCH get_list INTO emails_;
-   CLOSE get_list;
-   final_email_ := REPLACE(emails_, ',', ';');
-   RETURN nvl (final_email_, 'wasantha.kumara@elektron-technology.com....');
-END Et_Get_Email_List;
+   Cursor get_list(groupId_ IN VARCHAR2, person_id_ IN VARCHAR2) is
+          select wmsys.wm_concat(ifsapp.fnd_user_property_api.Get_Value(k.person_id, 'SMTP_MAIL_ADDRESS')) list_email
+          from IFSAPP.DOCUMENT_GROUP_MEMBERS k 
+          where k.group_id=groupId_ 
+          or k.person_id=person_id_;
+          
+ emails_ varchar2(500);
+ final_email_ varchar2(500);
+
+begin
+ 
+     open get_list(group_id, person_id);
+          fetch get_list into emails_;
+     close get_list;
+            
+ final_email_ :=  REPLACE(emails_, ',', ';');     
+ return nvl(final_email_,'wasantha.kumara@elektron-technology.com');
+
+end ET_GET_EMAIL_LIST;
+
+FUNCTION ET_GET_EMAIL_LIST2(step_no IN NUMBER, key_ref IN VARCHAR2) RETURN VARCHAR2 IS
+
+   Cursor get_ids(step_no_ IN NUMBER, key_ref_ IN VARCHAR2) is
+          select a.person_id, a.group_id
+          from IFSAPP.APPROVAL_ROUTING a
+          where a.key_ref = key_ref_
+          and a.step_no = step_no_; 
+  /*        
+   Cursor get_list(groupId_ IN VARCHAR2, person_id_ IN VARCHAR2) is
+          select wmsys.wm_concat(ifsapp.fnd_user_property_api.Get_Value(k.person_id, 'SMTP_MAIL_ADDRESS')) list_email
+          from IFSAPP.DOCUMENT_GROUP_MEMBERS k 
+          where k.group_id=groupId_ 
+          or k.person_id=person_id_; */         
+        
+   
+ --emails_ varchar2(500);
+ --final_email_ varchar2(500);
+ group_id_ varchar2(20);
+ person_id_ varchar2(20);
+
+begin
+ 
+--trace_sys.Message('step no  ********************************************************:'||step_no);
+--trace_sys.Message('key_ref  *******************************************************************:'||key_ref);
+Dbms_Output.put_line('step no  *******************************************************************:'||step_no);
+Dbms_Output.put_line('key_ref  *******************************************************************:'||key_ref);
+
+
+     open get_ids(step_no, key_ref);
+          fetch get_ids into person_id_, group_id_;
+     close get_ids;
+
+            --group_id_ := null;
+            --person_id_ :='WAKUGB';
+            
+     return ET_GET_EMAIL_LIST(group_id_, person_id_);
+
+   /*  open get_list(group_id_, person_id_);
+          fetch get_list into emails_;
+     close get_list;
+            
+ final_email_ :=  REPLACE(emails_, ',', ';');     
+ return nvl(final_email_,'wasantha.kumara@elektron-technology.com');*/
+ 
+
+end ET_GET_EMAIL_LIST2;
+
 
 
 
