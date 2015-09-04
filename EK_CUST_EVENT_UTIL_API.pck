@@ -1,35 +1,96 @@
 CREATE OR REPLACE PACKAGE EK_CUST_EVENT_UTIL_API IS
 
-FUNCTION Et_Park_SO (
-   so_id_   IN VARCHAR2,
-   rel_no_  IN VARCHAR2,
-   seq_no_  IN VARCHAR2 ) RETURN NUMBER;
+/*************************************************
+ * Function : Park_Shop_Order_By_Part_No
+ * Author   : OAPGARTH
+ * Created  : 03/07/2015 15:24:01
+ * Purpose  :
+ *    Triggered when an inventory part status is changed to or from "S - Product Stopped",
+ *    so that Shop Orders that produce the part are "Parked".  The function also releases
+ *    the Shop Order when the part is set back to Active again.
+ *    See triggering event: INVENTORY_PART_STATUS_CHG
+ */
+PROCEDURE Park_Shop_Order_By_Part_No (
+   part_no_      IN VARCHAR2,
+   contract_     IN VARCHAR2,
+   new_status_   IN VARCHAR2,
+   old_status_   IN VARCHAR2 );
 
-FUNCTION Et_Tool_Validate (
-   so_id_     IN VARCHAR2,
-   rel_no_    IN VARCHAR2,
-   seq_no_    IN VARCHAR2 ) RETURN NUMBER;
-
-FUNCTION Et_Analysis_Issues_Exist (
-   analysis_no_  IN VARCHAR2,
-   contract_     IN VARCHAR2 ) RETURN NUMBER;
-
+/*************************************************
+ * Functions : Et_Do_Park, Et_Do_Unreserve, Et_So_Release,
+ *             Et_Do_Park_Now, Et_Do_Unreserve_Now, Et_Do_Release_Now
+ * Author    : WKUMARA 
+ * Created   : ??/??/2014
+ * Purpose   :
+ *    To change the status of Shop Orders.  These procedures are triggered
+ *    from several events in the system, the underlying intention being to
+ *    halt production of a part when certain conditions in the system are met
+ *    (e.g. when a part is set to inactive).  The first three functions launch
+ *    the "Now" functions as background jobs.
+ */
 PROCEDURE Et_Do_Park (
    so_id_     IN VARCHAR2,
    rel_no_    IN VARCHAR2,
    seq_no_    IN VARCHAR2 );
-
 PROCEDURE Et_Do_Unreserve (
    so_id_      IN VARCHAR2,
    rel_no_     IN VARCHAR2,
    seq_no_     IN VARCHAR2,
    line_it_no_ IN VARCHAR2);
-
+PROCEDURE Et_So_Release (
+   so_id_         IN VARCHAR2,
+   rel_no_        IN VARCHAR2,
+   seq_no_        IN VARCHAR2 );
 PROCEDURE Et_Do_Park_Now (
    passattr_     IN VARCHAR2 );
-    
 PROCEDURE Et_Do_Unreserve_Now (
    passattr_     IN VARCHAR2 );
+PROCEDURE Et_Do_Release_Now (
+   passattr_      IN VARCHAR2 );
+
+/*************************************************
+ * Functions : Et_Park_SO
+ * Author    : WKUMARA  -- 2014/??/??
+ * Updates   : OAPGARTH -- 2015/08/11
+ * Purpose   :
+ *    This function is not very well named to be honest, but cannot be renamed
+ *    for compatibility reasons.
+ *    Given a unique Shop-Order key, it checks to see whether the tools linked
+ *    to the SO are in need of a renewal of their calibration certificate. The
+ *    return values mean: 1 - yes, tools exist which are in need of a new cert
+ *                        0 - no, all tools are valid and current certificates
+ */
+FUNCTION Et_Park_SO (
+   so_id_   IN VARCHAR2,
+   rel_no_  IN VARCHAR2,
+   seq_no_  IN VARCHAR2 ) RETURN NUMBER;
+/*************************************************
+ * Functions : Et_Tool_Validate
+ * Author    : WKUMARA  -- 2014/??/??
+ * Purpose   :
+ *    Does almost exactly the same as the function above, except that it checks
+ *    the tool certificate validation date against the lifespan of the SO.
+ */
+FUNCTION Et_Tool_Validate (
+   so_id_     IN VARCHAR2,
+   rel_no_    IN VARCHAR2,
+   seq_no_    IN VARCHAR2 ) RETURN NUMBER;
+
+/*************************************************
+ * Functions : Inform_Users_Status_Change
+ * Author    : OAPGARTH -- 2015/08/17
+ * Purpose   :
+ *    Based on the type of status change happening on the inventory part, we either want to
+ *    send a mail to users (returning a 'YES' from this function), or not (reutrn 'NO')
+ */
+FUNCTION Inform_Users_Status_Change (
+   old_status_  IN VARCHAR2,
+   new_status_  IN VARCHAR2 ) RETURN VARCHAR2;
+
+
+FUNCTION Et_Analysis_Issues_Exist (
+   analysis_no_  IN VARCHAR2,
+   contract_     IN VARCHAR2 ) RETURN NUMBER;
 
 FUNCTION Et_II_Commission_Chk (
    inv_id_      IN NUMBER,
@@ -54,16 +115,7 @@ FUNCTION Et_Non_Conforms (
 FUNCTION Et_Out_Spec (
    analysis_no_   IN VARCHAR2 ) RETURN NUMBER;
 
-PROCEDURE Et_Do_Release_Now (
-   passattr_      IN VARCHAR2 );
-
-PROCEDURE Et_So_Release (
-   so_id_         IN VARCHAR2,
-   rel_no_        IN VARCHAR2,
-   seq_no_        IN VARCHAR2 );
-
 PROCEDURE Et_Tool_Updated (
-   --tool_ins_id_   IN VARCHAR2,
    contract_      IN VARCHAR2 );
 
 PROCEDURE Et_Reservation_Check;
@@ -72,9 +124,13 @@ FUNCTION Et_Get_Email_By_WO (
    wo_no_     IN VARCHAR2,
    contract_  IN VARCHAR2 ) RETURN VARCHAR2;
 
-FUNCTION ET_GET_EMAIL_LIST(Group_Id IN VARCHAR2, Person_ID IN VARCHAR2) RETURN VARCHAR2;
+FUNCTION Et_Get_Email_List (
+   group_id_  IN VARCHAR2,
+   person_id_ IN VARCHAR2 ) RETURN VARCHAR2;
 
-FUNCTION ET_GET_EMAIL_LIST2(step_no IN NUMBER, key_ref IN VARCHAR2) RETURN VARCHAR2;
+FUNCTION Et_Get_Email_List2 (
+   step_no_  IN NUMBER,
+   key_ref_  IN VARCHAR2 ) RETURN VARCHAR2;
 
 FUNCTION force_to_number (
    string_    IN VARCHAR2 ) RETURN NUMBER;
@@ -84,53 +140,50 @@ END EK_CUST_EVENT_UTIL_API;
 /
 CREATE OR REPLACE PACKAGE BODY EK_CUST_EVENT_UTIL_API IS
 
-FUNCTION Et_Park_SO (
-   so_id_   IN VARCHAR2,
-   rel_no_  IN VARCHAR2,
-   seq_no_  IN VARCHAR2 ) RETURN NUMBER
+
+/*************************************************
+ * Function : Park_Shop_Order_By_Part_No
+ * Author   : OAPGARTH
+ * Created  : 03/07/2015 15:24:01
+ * Purpose   : See package Header for detailed comments.
+ */
+PROCEDURE Park_Shop_Order_By_Part_No (
+   part_no_      IN VARCHAR2,
+   contract_     IN VARCHAR2,
+   new_status_   IN VARCHAR2,
+   old_status_   IN VARCHAR2 )
 IS
-   CURSOR get_d (so_id_c_ IN VARCHAR2, release_no_ IN VARCHAR2, sequence_no_ IN VARCHAR2) IS
-      SELECT distinct sot.contract,
-                      sot.order_no,
-                      sot.release_no,
-                      sot.sequence_no,
-                      sot.tool_id,
-                      nvl(pod.phase_out, to_date('31/12/2050', 'DD/MM/YYYY')) phase_out,
-                      nvl(mtd.next_calibration_date, to_date('31/12/2050', 'DD/MM/YYYY')) next_cal_date
-      FROM   shop_order_oper_tool sot,
-             ( SELECT mt.contract, mt.tool_id, max(mt.end_date) phase_out
-               FROM   manuf_tool_detail_avail mt
-               GROUP BY mt.contract, mt.tool_id ) pod,
-             ( SELECT mtd.contract, mtd.tool_id, mtd.next_calibration_date
-               FROM   manuf_tool_detail mtd ) mtd
-      WHERE  sot.order_no = so_id_c_
-        AND  sot.release_no = release_no_
-        AND  sot.sequence_no = sequence_no_
-        AND  sot.contract = pod.contract
-        AND  sot.tool_id = pod.tool_id
-        AND  sot.contract = mtd.contract
-        AND  sot.tool_id = mtd.tool_id;
-
-  phased_out_   NUMBER := 0;
-  due_calib_    NUMBER := 0;
-
+   CURSOR get_part_rel_shop_orders IS
+      SELECT s.order_no, s.release_no, s.sequence_no
+      FROM   shop_ord_tab s
+      WHERE  s.rowstate IN ('Planned','Released')
+       AND   s.contract = contract_
+       AND   s.part_no = part_no_;
+   CURSOR get_part_parked_shop_orders IS
+      SELECT *
+      FROM   shop_ord_tab s
+      WHERE  s.rowstate IN ('Parked')
+       AND   s.contract = contract_
+       AND   s.part_no = part_no_;
 BEGIN
-   FOR i_ IN get_d (so_id_, rel_no_, seq_no_) LOOP
-      IF (i_.phase_out < sysdate) THEN
-         phased_out_ := phased_out_ + 1;
-      END IF;
-      IF (i_.next_cal_date <= sysdate) THEN
-         due_calib_ := due_calib_ + 1;
-      END IF;
-   END LOOP;
-   IF (phased_out_ > 0 or due_calib_ > 0) THEN
-      RETURN 1;
-   ELSE
-      RETURN 0;
+   IF new_status_ = 'S' THEN
+      FOR s_ IN get_part_rel_shop_orders LOOP
+         Et_Do_Park (s_.order_no, s_.release_no, s_.sequence_no);
+      END LOOP;
+   ELSIF old_status_ = 'S' THEN
+      FOR s_ IN get_part_parked_shop_orders LOOP
+         Et_So_Release (s_.order_no, s_.release_no, s_.sequence_no);
+      END LOOP;
    END IF;
-END Et_Park_SO;
+END Park_Shop_Order_By_Part_No;
 
-
+/*************************************************
+ * Functions : Et_Do_Park, Et_Do_Unreserve, Et_So_Release,
+ *             Et_Do_Park_Now, Et_Do_Unreserve_Now, Et_Do_Release_Now
+ * Author    : WKUMARA 
+ * Created   : ??/??/2014
+ * Purpose   : See package Header for detailed comments.
+ */
 PROCEDURE Et_Do_Park (
    so_id_     IN VARCHAR2,
    rel_no_    IN VARCHAR2,
@@ -142,9 +195,8 @@ BEGIN
    Client_SYS.Add_To_Attr ('SO_ID',  so_id_,  attr_);
    Client_SYS.Add_To_Attr ('REL_NO', rel_no_, attr_);
    Client_SYS.Add_To_Attr ('SEQ_NO', seq_no_, attr_);
-   Transaction_SYS.Deferred_Call ('Ek_Cust_Event_Util_API.Et_Do_Park_Now', attr_, 'Doing Parking of SO (Elektron Custom Job)');
+   Transaction_SYS.Deferred_Call ('Ek_Cust_Event_Util_API.Et_Do_Park_Now', attr_, 'Doing Parking of SO [' || so_id_ || '] (Elektron Custom Job)');
 END Et_Do_Park;
-
 
 PROCEDURE Et_Do_Unreserve (
    so_id_      IN VARCHAR2,
@@ -160,8 +212,22 @@ BEGIN
    Client_SYS.Add_To_Attr ('REL_NO',     rel_no_,     attr_);
    Client_SYS.Add_To_Attr ('SEQ_NO',     seq_no_,     attr_);
    Client_SYS.Add_To_Attr ('LINE_IT_NO', line_it_no_, attr_);
-   Transaction_SYS.Deferred_Call ('EK_CUST_EVENT_UTIL_API.ET_DO_UNRESERVE_NOW', attr_, 'Doing Unreserve of SO (Elektron Custom Job)');
+   Transaction_SYS.Deferred_Call ('Ek_Cust_Event_Util_API.Et_Do_Unreserve_Now', attr_, 'Doing Unreserve of SO [' || so_id_ || '] (Elektron Custom Job)');
 END Et_Do_Unreserve;
+
+PROCEDURE Et_So_Release (
+   so_id_     IN VARCHAR2,
+   rel_no_    IN VARCHAR2,
+   seq_no_    IN VARCHAR2 )
+IS
+   attr_  VARCHAR2(2000);
+BEGIN
+   Client_SYS.Clear_Attr  (attr_);
+   Client_SYS.Add_To_Attr ('SO_ID',  so_id_,  attr_);
+   Client_SYS.Add_To_Attr ('REL_NO', rel_no_, attr_);
+   Client_SYS.Add_To_Attr ('SEQ_NO', seq_no_, attr_);
+   Transaction_SYS.Deferred_Call('Ek_Cust_Event_Util_API.Et_Do_Release_Now', attr_, 'Releasing Shop Order [' || so_id_ || '] from Parked (Elektron Custom Job)');
+END ET_SO_Release;
 
 
 PROCEDURE Et_Do_Park_Now (
@@ -178,15 +244,16 @@ IS
       WHERE  so.order_no = so_no_
         AND  so.release_no = rel_no_
         AND  so.sequence_no = seq_no_;
+   ver_        get_version%ROWTYPE;
 BEGIN
    so_no_  := Client_SYS.Get_Item_Value ('SO_ID', passattr_);
    rel_no_ := Client_SYS.Get_Item_Value ('REL_NO', passattr_);
    seq_no_ := Client_SYS.Get_Item_Value ('SEQ_NO', passattr_);
-   FOR i_ in get_version LOOP
-      Shop_Ord_API.Park__ (info_, i_.objid, i_.objversion, attr_, 'DO');
-   END LOOP;
+   OPEN  get_version;
+   FETCH get_version INTO ver_;
+   CLOSE get_version;
+   Shop_Ord_API.Park__ (info_, ver_.objid, ver_.objversion, attr_, 'DO');
 END Et_Do_Park_Now;
-
 
 PROCEDURE Et_Do_Unreserve_Now (
    passattr_ IN VARCHAR2 )
@@ -204,6 +271,129 @@ BEGIN
    line_it_no_ := Client_SYS.Get_Item_Value ('LINE_IT_NO', passattr_);
    Shop_Material_Alloc_API.Unreserve (info_, attr_, so_no_, rel_no_, seq_no_, line_it_no_);
 END Et_Do_Unreserve_Now;
+
+PROCEDURE Et_Do_Release_Now (
+   passattr_      IN VARCHAR2 )
+IS
+   info_         VARCHAR2(2000);
+   attr_         VARCHAR2(2000);
+   so_no_        shop_ord.order_no%TYPE;
+   rel_no_       shop_ord.release_no%TYPE;
+   seq_no_       shop_ord.sequence_no%TYPE;
+   CURSOR get_version IS
+      SELECT objid, objversion
+      FROM   shop_ord
+      WHERE  order_no = so_no_
+        AND  release_no = rel_no_
+        AND  sequence_no = seq_no_;
+   ver_          get_version%ROWTYPE;
+BEGIN
+   so_no_  := Client_SYS.Get_Item_Value ('SO_ID', passattr_);
+   rel_no_ := Client_SYS.Get_Item_Value ('REL_NO', passattr_);
+   seq_no_ := Client_SYS.Get_Item_Value ('SEQ_NO', passattr_);
+   OPEN  get_version;
+   FETCH get_version INTO ver_;
+   CLOSE get_version;
+   Shop_Ord_API.Release__ (info_, ver_.objid, ver_.objversion, attr_, 'DO');
+END Et_Do_Release_Now;
+
+
+/*************************************************
+ * Functions : Et_Park_SO
+ * Updates   : OAPGARTH -- 2015/08/11
+ * Purpose   :
+ *    See package header for comments.
+ *    The principle of the new design is to find each tool linked to a given SO,
+ *    and which is in need of an updated calibration certificate. If such a tool
+ *    exists, it is counted, and flagged to the caller as 1.
+ */
+FUNCTION Et_Park_SO (
+   so_id_   IN VARCHAR2,
+   rel_no_  IN VARCHAR2,
+   seq_no_  IN VARCHAR2 ) RETURN NUMBER
+IS
+   CURSOR get_expired_calibrations IS
+      WITH tool_calib_dates AS (
+         SELECT DISTINCT
+                   sot.order_no, sot.release_no, sot.sequence_no,
+                   nvl(pod.phase_out, to_date('31/12/2050', 'DD/MM/YYYY')) phase_out,
+                   nvl(mtd.next_calibration_date, to_date('31/12/2050', 'DD/MM/YYYY')) next_cal_date
+         FROM   shop_order_oper_tool sot
+                JOIN manuf_tool_detail mtd
+                     ON sot.contract = mtd.contract
+                    AND sot.tool_id = mtd.tool_id
+                JOIN ( SELECT mt.contract, mt.tool_id, max(mt.end_date) phase_out
+                       FROM   manuf_tool_detail_avail mt
+                       GROUP BY mt.contract, mt.tool_id ) pod
+                     ON sot.contract = pod.contract
+                    AND sot.tool_id = pod.tool_id
+      )  SELECT count(1)
+         FROM   tool_calib_dates tc
+         WHERE  ( tc.phase_out < sysdate OR tc.next_cal_date <= sysdate )
+           AND  tc.order_no = so_id_
+           AND  tc.release_no = rel_no_
+           AND  tc.sequence_no = seq_no_;
+   nr_uncalibrated_tools_ NUMBER;
+BEGIN
+   OPEN  get_expired_calibrations;
+   FETCH get_expired_calibrations INTO nr_uncalibrated_tools_;
+   CLOSE get_expired_calibrations;
+   RETURN least (nr_uncalibrated_tools_,1);
+END Et_Park_SO;
+
+/*************************************************
+ * Functions : Et_Tool_Validate
+ * Author    : WKUMARA  -- 2014/??/??
+ * Purpose   : See package header
+ */
+FUNCTION Et_Tool_Validate (
+   so_id_     IN VARCHAR2,
+   rel_no_    IN VARCHAR2,
+   seq_no_    IN VARCHAR2 ) RETURN NUMBER
+IS
+   CURSOR get_d IS
+      SELECT 1
+      FROM   ( SELECT DISTINCT
+                         s.revised_start_date start_date, s.revised_due_date finish_date,
+                         nvl(mtd.next_calibration_date, to_date('31/12/2050', 'DD/MM/YYYY')) next_cal_date
+               FROM   shop_order_oper_tool sot, shop_ord s, manuf_tool_detail mtd
+               WHERE  s.order_no = so_id_
+                 AND  s.release_no = rel_no_
+                 AND  s.sequence_no = seq_no_
+                 AND  sot.contract = mtd.contract
+                 AND  sot.tool_id = mtd.tool_id
+                 AND  sot.order_no = s.order_no
+                 AND  sot.sequence_no = s.sequence_no
+                 AND  sot.release_no = s.release_no
+             ) tt
+      WHERE  tt.next_cal_date BETWEEN start_date AND finish_date
+         OR  tt.next_cal_date < start_date;
+
+BEGIN
+   FOR i_ IN get_d LOOP
+      RETURN 1;
+   END LOOP;
+   RETURN 0;
+END Et_Tool_Validate;
+
+/*************************************************
+ * Functions : Inform_Users_Status_Change
+ * Author    : OAPGARTH -- 2015/08/17
+ * Purpose   : See package header
+ */
+FUNCTION Inform_Users_Status_Change (
+   old_status_  IN VARCHAR2,
+   new_status_  IN VARCHAR2 ) RETURN VARCHAR2
+IS BEGIN
+   IF new_status_ IN ('S','H') THEN
+      RETURN 'YES';
+   ELSIF old_status_ IN ('S','H') AND new_status_ = 'A' THEN
+      RETURN 'YES';
+   END IF;
+   RETURN 'NO';
+END Inform_Users_Status_Change;
+
+
 
 FUNCTION Et_II_Commission_Chk (
    inv_id_      IN NUMBER,
@@ -416,83 +606,10 @@ BEGIN
    RETURN 0;
 END Et_Analysis_Issues_Exist;
 
-
-FUNCTION Et_Tool_Validate (
-   so_id_     IN VARCHAR2,
-   rel_no_    IN VARCHAR2,
-   seq_no_    IN VARCHAR2 ) RETURN NUMBER
-IS
-   CURSOR get_d (so_id_c_ IN VARCHAR2, release_no_ IN VARCHAR2, sequence_no_ IN VARCHAR2) IS
-      SELECT 1 FROM ( SELECT distinct s.revised_start_date start_date, s.revised_due_date finish_date,
-                                      nvl(mtd.next_calibration_date, to_date('31/12/2050', 'DD/MM/YYYY')) next_cal_date
-                      FROM   shop_order_oper_tool sot, shop_ord s,
-                             ( SELECT mtd.contract, mtd.tool_id, mtd.next_calibration_date
-                               FROM   manuf_tool_detail mtd ) mtd
-                      WHERE  s.order_no = so_id_c_
-                        AND  s.release_no = release_no_
-                        AND  s.sequence_no = sequence_no_
-                        AND  sot.contract = mtd.contract
-                        AND  sot.tool_id = mtd.tool_id
-                        AND  sot.order_no = s.order_no
-                        AND  sot.sequence_no = s.sequence_no
-                        AND  sot.release_no = s.release_no
-                        AND  sot.contract = s.contract
-                     ) tt
-      WHERE  tt.next_cal_date BETWEEN start_date AND finish_date
-         OR  tt. next_cal_date < start_date;
-
-BEGIN
-
-   FOR i_ IN get_d (so_id_, rel_no_, seq_no_) LOOP
-      RETURN 1;
-   END LOOP;
-   RETURN 0;
-END Et_Tool_Validate;
-
-
-PROCEDURE Et_Do_Release_Now (
-   passattr_      IN VARCHAR2 )
-IS
-   info_         VARCHAR2(2000);
-   attr_         VARCHAR2(2000);
-   so_no_        shop_ord.order_no%TYPE;
-   rel_no_       shop_ord.release_no%TYPE;
-   seq_no_       shop_ord.sequence_no%TYPE;
-
-   CURSOR get_version IS
-      SELECT /*ROWID, ltrim(lpad(to_char(rowversion,'YYYYMMDDHH24MISS'),2000))*/ objid, objversion
-      FROM  SHOP_ORD
-      WHERE  order_no = so_no_
-      AND   release_no = rel_no_
-      AND   sequence_no = seq_no_;
-BEGIN
-   so_no_  := Client_SYS.Get_Item_Value ('SO_ID', passattr_);
-   rel_no_ := Client_SYS.Get_Item_Value ('REL_NO', passattr_);
-   seq_no_ := Client_SYS.Get_Item_Value ('SEQ_NO', passattr_);
-   FOR i_ in get_version LOOP
-      trace_sys.Message('OBJID ----->'||i_.objid);
-      Shop_Ord_API.Release__ (info_, i_.objid, i_.objversion, attr_, 'DO');
-   END LOOP;
-END Et_Do_Release_Now;
-
-
-PROCEDURE Et_So_Release (
-   so_id_         IN VARCHAR2,
-   rel_no_        IN VARCHAR2,
-   seq_no_        IN VARCHAR2 )
-IS
-   attr_  VARCHAR2(2000);
-BEGIN
-   Client_SYS.Clear_Attr  (attr_);
-   Client_SYS.Add_To_Attr ('SO_ID',  so_id_,  attr_);
-   Client_SYS.Add_To_Attr ('REL_NO', rel_no_, attr_);
-   Client_SYS.Add_To_Attr ('SEQ_NO', seq_no_, attr_);
-   Transaction_SYS.Deferred_Call('Ek_Cust_Event_Util_API.Et_Do_Release_Now', attr_, 'Release SO:'|| so_id_);
-END ET_SO_Release;
-
--- this is not using but for the test
+--
+-- PROCEDURE Et_Tool_Updated is not used except for test purposes
+--
 PROCEDURE Et_Tool_Updated (
-   --tool_ins_id_   IN VARCHAR2,
    contract_      IN VARCHAR2 )
 IS
    CURSOR get_parked_so IS
@@ -569,77 +686,44 @@ BEGIN
 END Et_Get_Cus_By_WO;
 
 
-FUNCTION ET_GET_EMAIL_LIST(Group_Id IN VARCHAR2, Person_ID IN VARCHAR2) RETURN VARCHAR2 IS
+FUNCTION Et_Get_Email_List (
+   group_id_  IN VARCHAR2,
+   person_id_ IN VARCHAR2 ) RETURN VARCHAR2
+IS
+   CURSOR get_list IS
+      SELECT wmsys.wm_concat (Fnd_User_Property_API.Get_Value (k.person_id, 'SMTP_MAIL_ADDRESS')) list_email
+      FROM   document_group_members k 
+      WHERE  k.group_id = group_id_
+         OR  k.person_id = person_id_;
+   emails_       VARCHAR2(500);
+   final_email_  VARCHAR2(500);
+BEGIN
+   OPEN  get_list;
+   FETCH get_list INTO emails_;
+   CLOSE get_list;
+   final_email_ :=  replace (emails_, ',', ';');
+   RETURN nvl (final_email_, 'wasantha.kumara@elektron-technology.com');
+END Et_Get_Email_List;
 
-   Cursor get_list(groupId_ IN VARCHAR2, person_id_ IN VARCHAR2) is
-          select wmsys.wm_concat(ifsapp.fnd_user_property_api.Get_Value(k.person_id, 'SMTP_MAIL_ADDRESS')) list_email
-          from IFSAPP.DOCUMENT_GROUP_MEMBERS k 
-          where k.group_id=groupId_ 
-          or k.person_id=person_id_;
-          
- emails_ varchar2(500);
- final_email_ varchar2(500);
-
-begin
- 
-     open get_list(group_id, person_id);
-          fetch get_list into emails_;
-     close get_list;
-            
- final_email_ :=  REPLACE(emails_, ',', ';');     
- return nvl(final_email_,'wasantha.kumara@elektron-technology.com');
-
-end ET_GET_EMAIL_LIST;
-
-FUNCTION ET_GET_EMAIL_LIST2(step_no IN NUMBER, key_ref IN VARCHAR2) RETURN VARCHAR2 IS
-
-   Cursor get_ids(step_no_ IN NUMBER, key_ref_ IN VARCHAR2) is
-          select a.person_id, a.group_id
-          from IFSAPP.APPROVAL_ROUTING a
-          where a.key_ref = key_ref_
-          and a.step_no = step_no_; 
-  /*        
-   Cursor get_list(groupId_ IN VARCHAR2, person_id_ IN VARCHAR2) is
-          select wmsys.wm_concat(ifsapp.fnd_user_property_api.Get_Value(k.person_id, 'SMTP_MAIL_ADDRESS')) list_email
-          from IFSAPP.DOCUMENT_GROUP_MEMBERS k 
-          where k.group_id=groupId_ 
-          or k.person_id=person_id_; */         
-        
-   
- --emails_ varchar2(500);
- --final_email_ varchar2(500);
- group_id_ varchar2(20);
- person_id_ varchar2(20);
-
-begin
- 
---trace_sys.Message('step no  ********************************************************:'||step_no);
---trace_sys.Message('key_ref  *******************************************************************:'||key_ref);
-Dbms_Output.put_line('step no  *******************************************************************:'||step_no);
-Dbms_Output.put_line('key_ref  *******************************************************************:'||key_ref);
-
-
-     open get_ids(step_no, key_ref);
-          fetch get_ids into person_id_, group_id_;
-     close get_ids;
-
-            --group_id_ := null;
-            --person_id_ :='WAKUGB';
-            
-     return ET_GET_EMAIL_LIST(group_id_, person_id_);
-
-   /*  open get_list(group_id_, person_id_);
-          fetch get_list into emails_;
-     close get_list;
-            
- final_email_ :=  REPLACE(emails_, ',', ';');     
- return nvl(final_email_,'wasantha.kumara@elektron-technology.com');*/
- 
-
-end ET_GET_EMAIL_LIST2;
-
-
-
+FUNCTION Et_Get_Email_List2 (
+   step_no_  IN NUMBER,
+   key_ref_  IN VARCHAR2 ) RETURN VARCHAR2
+IS
+   CURSOR get_ids IS
+      SELECT a.person_id, a.group_id
+      FROM   approval_routing a
+      WHERE  a.key_ref = key_ref_
+        AND  a.step_no = step_no_;
+   group_id_ varchar2(20);
+   person_id_ varchar2(20);
+BEGIN
+   Dbms_Output.put_line('step no  *******************************************************************: '||step_no_);
+   Dbms_Output.put_line('key_ref  *******************************************************************: '||key_ref_);
+   OPEN  get_ids;
+   FETCH get_ids INTO person_id_, group_id_;
+   CLOSE get_ids;
+   RETURN Et_Get_Email_List (group_id_, person_id_);
+END Et_Get_Email_List2;
 
 FUNCTION force_to_number (
    string_    IN VARCHAR2 ) RETURN NUMBER

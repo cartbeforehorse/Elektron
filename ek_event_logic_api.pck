@@ -44,7 +44,7 @@ CREATE OR REPLACE PACKAGE BODY ek_event_logic_api IS
          FROM   shop_ord_tab s
          WHERE  s.rowstate IN ('Parked')
           AND   s.contract = contract_
-          AND   s.part_no = part_no_;
+          AND   s.part_no = art_no_;
    BEGIN
       IF new_status_ = 'S' THEN
          FOR s_ IN get_part_rel_shop_orders LOOP
