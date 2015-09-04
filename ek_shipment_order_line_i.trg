@@ -14,7 +14,7 @@ CREATE OR REPLACE TRIGGER ek_shipment_order_line_i
    AFTER INSERT ON shipment_order_line_tab
    FOR EACH ROW
 DECLARE
-   part_status_   inventory_part_tab.part_status%TYPE;
+   part_status_ VARCHAR2(1);
    CURSOR get_co_line_part_status IS
       SELECT Inventory_Part_API.Get_Part_Status (l.contract, l.part_no) part_status
       FROM   customer_order_line_tab l
@@ -26,7 +26,7 @@ BEGIN
    OPEN  get_co_line_part_status;
    FETCH get_co_line_part_status INTO part_status_;
    CLOSE get_co_line_part_status;
-   IF part_status_ = 'S' THEN
+   IF part_status_ IN ('S','H') THEN
       Error_SYS.Record_General ('ShipmentOrderLine', 'PARTBLOCKED: The part on this CO line is marked as STOP. You may not ship this part.');
    END IF;
 END ek_shipment_order_line_i;
