@@ -373,51 +373,33 @@ IS
 
 
    CURSOR get_ship_and_invoice_vr IS
-      (
-         SELECT vrc.company, 1 ord, COST_FLAG_ line_type, DEFERRED_ACCOUNT_COST_ defer_account,
+      WITH ship_and_invoice_rows AS (
+         SELECT vrc.company, 1 ord, COST_FLAG_ line_type, DEFERRED_ACCOUNT_COST_ defer_account, vrc.account,
                 vrc.voucher_type, vrc.voucher_no, vrc.row_no, vrc.accounting_year, vrc.accounting_period,
-                vrc.account, vrc.code_b, vrc.code_c, vrc.code_d, vrc.code_e, vrc.code_f, vrc.code_g, vrc.code_h, vrc.code_i, vrc.code_j,
+                vrc.code_b, vrc.code_c sales_group, vrc.code_d, vrc.code_e, vrc.code_f, vrc.code_g, vrc.code_h, vrc.code_i, vrc.code_j,
                 vrc.optional_code, vrc.tax_direction, vrc.currency_code, vrc.currency_rate, vrc.conversion_factor,
                 vrc.debet_amount, vrc.credit_amount, vrc.currency_debet_amount, vrc.currency_credit_amount,
-                vrc.reference_serie, vrc.reference_number, ith.date_applied, ith.contract, ith.part_no inv_part,
-                col.order_no co_no, sp.catalog_group sales_group
+                vrc.reference_serie, vrc.reference_number, ith.date_applied, ith.contract, ith.part_no inv_part, ith.order_no co_no
          FROM   voucher_row vrc
                 JOIN inventory_transaction_hist_tab ith
                      ON ith.transaction_id = vrc.mpccom_accounting_id
-                JOIN customer_order_line_tab col
-                     ON col.order_no = ith.order_no
-                    AND col.line_no = ith.release_no
-                    AND col.rel_no = ith.sequence_no
-                    AND col.line_item_no = ith.line_item_no
-                JOIN sales_part_tab sp
-                     ON sp.contract = col.contract
-                    AND sp.catalog_no = col.catalog_no
          WHERE  vrc.company = COMPANY_
            AND  vrc.voucher_type = SHIP_VOU_TYPE_
            AND  vrc.amount != 0
            AND  vrc.reference_serie = 'CUST ORDER'
-           AND  sp.catalog_group IN ('CKPAH','CKCOH','CKCOA','CKCOP')
+           AND  vrc.code_c IN ('CKPAH','CKCOH','CKCOA','CKCOP')
            AND  vrc.account IN ( SELECT pcd.code_part_value
                                  FROM   posting_ctrl_detail pcd
                                  WHERE  pcd.company = vrc.company
                                    AND  pcd.posting_type = 'M24'
                                    AND  pcd.code_part = 'A' )
-           -- ensure we don't duplicate vouchers that have already been distributed
-           AND  NOT EXISTS ( SELECT 1 FROM voucher_row_tab vr2
-                             WHERE  vr2.company = vrc.company
-                               AND  vr2.voucher_type = M_VOUCHER_TYPE_
-                               AND  regexp_like (vr2.text, '\[orig-vou:'||vrc.voucher_type ||'-'||vrc.voucher_no||'-'||vrc.row_no ||'\]')
-                           )
-      )
-      UNION
-      (
-         SELECT vrs.company, 2 ord, REVENUE_FLAG_ line_type, DEFERRED_ACCOUNT_REVENUE_ defer_account,
+         UNION
+         SELECT vrs.company, 2 ord, REVENUE_FLAG_ line_type, DEFERRED_ACCOUNT_REVENUE_ defer_account, vrs.account,
                 vrs.voucher_type, vrs.voucher_no, vrs.row_no, vrs.accounting_year, vrs.accounting_period,
-                vrs.account, vrs.code_b, vrs.code_c, vrs.code_d, vrs.code_e, vrs.code_f, vrs.code_g, vrs.code_h, vrs.code_i, vrs.code_j,
+                vrs.code_b, vrs.code_c sales_group, vrs.code_d, vrs.code_e, vrs.code_f, vrs.code_g, vrs.code_h, vrs.code_i, vrs.code_j,
                 vrs.optional_code, vrs.tax_direction, vrs.currency_code, vrs.currency_rate, vrs.conversion_factor,
                 vrs.debet_amount, vrs.credit_amount, vrs.currency_debet_amount, vrs.currency_credit_amount,
-                vrs.reference_serie, vrs.reference_number, null date_applied, sp.contract, sp.part_no inv_part,
-                coi.order_no co_no, sp.catalog_group sales_group
+                vrs.reference_serie, vrs.reference_number, null date_applied, sp.contract, sp.part_no inv_part, coi.order_no co_no
          FROM   voucher_row vrs
                 JOIN customer_order_inv_head ih
                      ON vrs.company = ih.company
@@ -433,20 +415,20 @@ IS
          WHERE  vrs.company = COMPANY_
            AND  vrs.voucher_type = FIN_VOU_TYPE_
            AND  vrs.amount != 0
-           AND  sp.catalog_group IN ('CKPAH')
+           AND  vrs.code_c IN ('CKPAH')
            AND  vrs.account IN ( SELECT pcd.code_part_value
                                  FROM   posting_ctrl_detail pcd
                                  WHERE  pcd.company = vrs.company
                                    AND  pcd.posting_type = 'M28'
                                    AND  pcd.code_part = 'A' )
-           -- ensure we don't duplicate vouchers that have already been distributed
-           AND  NOT EXISTS ( SELECT 1 FROM voucher_row_tab vr3
-                             WHERE  vr3.company = vrs.company
-                               AND  vr3.voucher_type = M_VOUCHER_TYPE_
-                               AND  regexp_like (vr3.text, '\[orig-vou:'||vrs.voucher_type ||'-'||vrs.voucher_no||'-'||vrs.row_no ||'\]')
-                           )
-      )
-      ORDER BY ord ASC, co_no;
+      )  SELECT *
+         FROM   ship_and_invoice_rows sir
+         WHERE  NOT EXISTS (
+                   SELECT 1 FROM voucher_row_tab vre
+                   WHERE  vre.company = sir.company
+                     AND  vre.voucher_type = M_VOUCHER_TYPE_
+                     AND  regexp_like (vre.text, '\[orig-vou:'||sir.voucher_type ||'-'||sir.voucher_no||'-'||sir.row_no ||'\]'))
+         ORDER BY ord ASC, co_no ASC;
 
    dvr_       get_ship_and_invoice_vr%ROWTYPE;
 
@@ -458,6 +440,7 @@ IS
         AND  vr.voucher_no = final_voucher_no_
         AND  vr.accounting_year = acc_year_
         AND  regexp_like (vr.text, '\[type:(COST|REVENUE)\]')
+        AND  regexp_like (vr.text, '\[spread:(\d)+\]')
         AND  nvl(vr.amount,0) != 0;
 
 
@@ -479,7 +462,7 @@ IS
       vou_row_rec_.accounting_period      := orig_vr_.accounting_period;
       vou_row_rec_.codestring_rec.code_a  := posting_account_;
       vou_row_rec_.codestring_rec.code_b  := orig_vr_.code_b;
-      vou_row_rec_.codestring_rec.code_c  := orig_vr_.code_c;
+      vou_row_rec_.codestring_rec.code_c  := orig_vr_.sales_group;
       vou_row_rec_.codestring_rec.code_d  := orig_vr_.code_d;
       vou_row_rec_.codestring_rec.code_e  := orig_vr_.code_e;
       vou_row_rec_.codestring_rec.code_f  := orig_vr_.code_f;
@@ -630,7 +613,7 @@ BEGIN
    --
    FOR vr_ IN get_rows_to_period_allocate LOOP
 
-      nr_of_periods_   := regexp_replace (vr_.text, '.*\[spread:(\d+)\].*', '\1');
+      nr_of_periods_   := to_number (regexp_replace(vr_.text,'.*\[spread:(\d+)\].*','\1'));
       Add_Periods (until_acc_yr_, until_acc_pr_, nr_of_periods_);
 
       line_amount_gbp_ := vr_.amount;
