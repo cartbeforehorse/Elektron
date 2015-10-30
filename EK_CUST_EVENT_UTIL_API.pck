@@ -1,5 +1,8 @@
 CREATE OR REPLACE PACKAGE EK_CUST_EVENT_UTIL_API IS
 
+module_  CONSTANT VARCHAR2(25) := 'FNDBAS'; 
+lu_name_ CONSTANT VARCHAR2(25) := 'EkCustEventUtil'; 
+
 /*************************************************
  * Function : Park_Shop_Order_By_Part_No
  * Author   : OAPGARTH
@@ -124,17 +127,70 @@ FUNCTION Et_Get_Email_By_WO (
    wo_no_     IN VARCHAR2,
    contract_  IN VARCHAR2 ) RETURN VARCHAR2;
 
-FUNCTION Et_Get_Email_List (
+----------------------------------------------------------
+-- START Document Management Helper functions
+
+/*************************************************
+ * Functions : Et_Get_Doc_Creator
+ * Author    : OSAPGB -- 2015/09/24
+ * Purpose   :
+ *    Wrapper for Doc_Issue_API.Get_User_Created(), because the
+ *    API does not have a method to access the value by key.
+ */
+FUNCTION Et_Doc_Get_User_Created (
+   key_ref_  IN VARCHAR2 ) RETURN VARCHAR2;
+
+/*************************************************
+ * Functions : Et_Get_Docgroup_Email_List
+ * Author    : WKUMARA -- 2015/09/10
+ * Purpose   :
+ *    Designed to work with Document Management Approval Routing
+ *    If the person_id is given, then simply return the associated User Id.
+ *    Otherwise, use the Group Id to accss a list of users associated with that group.
+ *    Return this group in comma-separated format, so it can be used in an e-mail TO: field. 
+ */
+FUNCTION Et_Get_Docgroup_Email_List (
    group_id_  IN VARCHAR2,
    person_id_ IN VARCHAR2 ) RETURN VARCHAR2;
 
+
+/*************************************************
+ * Functions : Et_Get_Email_List2
+ * Author    : WKUMARA -- 2015/09/10
+ * Purpose   :
+ *    Interrogates a Document Management Approval Routing record, which will
+ *    either have a group, or individual approver ID.  Return either the approver's
+ *    USER_ID, or a CSV list of USER_IDs who are linked to the Approval Group
+ */
 FUNCTION Et_Get_Email_List2 (
    step_no_  IN NUMBER,
    key_ref_  IN VARCHAR2 ) RETURN VARCHAR2;
 
+/*************************************************
+ * Functions : Et_Get_All_Doc_Approvers_List
+ * Author    : OSAPGB -- 2015/09/10
+ * Purpose   :
+ *    Provides a key to the approval line. If this line is the last line of the
+ *    approval route, then we return the full list of approvers associated with
+ *    the document (be that directly on the approval list, or via a group).
+ *    If this is not the last line, then we return a null value.
+ */
+FUNCTION Et_Get_All_Doc_Approvers_List (
+   doc_class_  IN VARCHAR2,
+   doc_no_     IN VARCHAR2,
+   doc_sheet_  IN VARCHAR2,
+   doc_rev_    IN VARCHAR2 ) RETURN VARCHAR2;
+-- END Document Management Helper functions
+----------------------------------------------------------
+
+PROCEDURE Et_Tools_Caliberate (
+   contract_  IN VARCHAR2,
+   email_list_ IN VARCHAR2,
+   no_of_days_ IN NUMBER );
+
 FUNCTION force_to_number (
    string_    IN VARCHAR2 ) RETURN NUMBER;
-    
+
 
 END EK_CUST_EVENT_UTIL_API;
 /
@@ -685,25 +741,39 @@ BEGIN
    RETURN nvl (cus_, 'No customer registered');
 END Et_Get_Cus_By_WO;
 
+----------------------------------------------------------
+-- START Document Management Helper functions
+FUNCTION Et_Doc_Get_User_Created (
+   key_ref_  IN VARCHAR2 ) RETURN VARCHAR2
+IS
+   doc_class_  doc_issue_tab.doc_class%TYPE := regexp_replace (key_ref_, '.*DOC_CLASS=([^\^]+)\^.*', '\1');
+   doc_no_     doc_issue_tab.doc_no%TYPE    := regexp_replace (key_ref_, '.*DOC_NO=([^\^]+)\^.*', '\1');
+   doc_sheet_  doc_issue_tab.doc_sheet%TYPE := regexp_replace (key_ref_, '.*DOC_SHEET=([^\^]+)\^.*', '\1');
+   doc_rev_    doc_issue_tab.doc_rev%TYPE   := regexp_replace (key_ref_, '.*DOC_REV=([^\^]+)\^.*', '\1');
+BEGIN
+   RETURN Doc_Issue_API.Get_User_Created (doc_class_, doc_no_, doc_sheet_, doc_rev_);
+END Et_Doc_Get_User_Created;
 
-FUNCTION Et_Get_Email_List (
+FUNCTION Et_Get_Docgroup_Email_List (
    group_id_  IN VARCHAR2,
    person_id_ IN VARCHAR2 ) RETURN VARCHAR2
 IS
-   CURSOR get_list IS
-      SELECT wmsys.wm_concat (Fnd_User_Property_API.Get_Value (k.person_id, 'SMTP_MAIL_ADDRESS')) list_email
-      FROM   document_group_members k 
-      WHERE  k.group_id = group_id_
-         OR  k.person_id = person_id_;
-   emails_       VARCHAR2(500);
-   final_email_  VARCHAR2(500);
+   CURSOR get_user_list IS
+      SELECT wmsys.wm_concat (Person_Info_API.Get_User_Id(k.person_id)) users_csv_list
+      FROM   document_group_members k
+      WHERE  k.group_id = group_id_;
+   emails_  VARCHAR2(500);
 BEGIN
-   OPEN  get_list;
-   FETCH get_list INTO emails_;
-   CLOSE get_list;
-   final_email_ :=  replace (emails_, ',', ';');
-   RETURN nvl (final_email_, 'wasantha.kumara@elektron-technology.com');
-END Et_Get_Email_List;
+   IF person_id_ IS NOT null THEN
+      emails_ := Person_Info_API.Get_User_Id(person_id_);
+   ELSIF group_id_ IS NOT null THEN
+      OPEN  get_user_list;
+      FETCH get_user_list INTO emails_;
+      CLOSE get_user_list;
+   END IF;
+   RETURN emails_;
+END Et_Get_Docgroup_Email_List;
+
 
 FUNCTION Et_Get_Email_List2 (
    step_no_  IN NUMBER,
@@ -714,16 +784,78 @@ IS
       FROM   approval_routing a
       WHERE  a.key_ref = key_ref_
         AND  a.step_no = step_no_;
-   group_id_ varchar2(20);
-   person_id_ varchar2(20);
+   group_id_  VARCHAR2(20);
+   person_id_ VARCHAR2(20);
 BEGIN
-   Dbms_Output.put_line('step no  *******************************************************************: '||step_no_);
-   Dbms_Output.put_line('key_ref  *******************************************************************: '||key_ref_);
    OPEN  get_ids;
    FETCH get_ids INTO person_id_, group_id_;
    CLOSE get_ids;
-   RETURN Et_Get_Email_List (group_id_, person_id_);
+   RETURN Et_Get_Docgroup_Email_List (group_id_, person_id_);
 END Et_Get_Email_List2;
+
+FUNCTION Et_Get_All_Doc_Approvers_List (
+   doc_class_  IN VARCHAR2,
+   doc_no_     IN VARCHAR2,
+   doc_sheet_  IN VARCHAR2,
+   doc_rev_    IN VARCHAR2 ) RETURN VARCHAR2
+IS
+   cumul_list_   VARCHAR2(2000) := '';
+   CURSOR loop_approval_list IS
+      SELECT Et_Get_Docgroup_Email_List(group_id, person_id) line_list
+      FROM   approval_routing ar
+      WHERE  ar.lu_name = 'DocIssue'
+        AND  ar.key_ref = 'DOC_CLASS=' || doc_class_ || '^DOC_NO='    || doc_no_    ||
+                          '^DOC_REV='  || doc_rev_   || '^DOC_SHEET=' || doc_sheet_ || '^';
+BEGIN
+   FOR al_ IN loop_approval_list LOOP
+      cumul_list_ := cumul_list_ || ',' || al_.line_list;
+   END LOOP;
+   RETURN trim (',' FROM cumul_list_); -- return null if not the last line
+END Et_Get_All_Doc_Approvers_List;
+-- END Document Management Helper functions
+----------------------------------------------------------
+
+
+
+  
+PROCEDURE Et_Tools_Caliberate (
+   contract_   IN VARCHAR2,
+   email_list_ IN VARCHAR2,
+   no_of_days_ IN NUMBER )
+IS
+   nl_               VARCHAR2(2) := chr(13) || chr(10);
+   body_text_        VARCHAR2(2000);
+   subject_          VARCHAR2(200);  
+
+   CURSOR get_tool_list (site_ VARCHAR2, no_days_ NUMBER) IS
+      SELECT t.tool_id, t.description, t.tool_instance, t.next_calibration_date,
+             Manuf_Tool_API.Get_Tool_Type (site_, t.tool_id) tool_type
+      FROM   manuf_tool_detail t 
+      WHERE  t.contract = site_
+        AND  t.next_calibration_date BETWEEN sysdate AND (sysdate + no_days_);
+
+BEGIN
+
+   FOR row_ in get_tool_list(contract_, no_of_days_) LOOP
+
+      subject_   := 'TEST: Important: Tool not Calibrated';
+      body_text_ := 'The followin tool needs to be calibrated within one week.' || nl_ || nl_ ||
+                    'Tool Type: ' || row_.tool_type || nl_ ||
+                    'Tool ID: ' || row_.tool_id || nl_ ||
+                    'Tool Instance: ' || row_.tool_instance || nl_ ||
+                    'Next Calibration Date: ' || row_.next_calibration_date || nl_ || nl_ || 'Thanks.';
+
+      Command_SYS.Mail (
+         from_user_name_ => 'IFSAPP',
+         from_alias_     => 'IFSAPP',
+         to_user_name_   => email_list_,
+         subject_        => subject_,
+         text_           => body_text_ );
+
+   END LOOP;
+
+END Et_Tools_Caliberate;
+
 
 FUNCTION force_to_number (
    string_    IN VARCHAR2 ) RETURN NUMBER
