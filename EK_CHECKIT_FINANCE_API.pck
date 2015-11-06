@@ -92,6 +92,7 @@ CURSOR get_ship_and_invoice_vr IS
                  AND col.line_item_no = ith.line_item_no
       WHERE  vrc.company = COMPANY_
         AND  vrc.voucher_type = SHIP_VOU_TYPE_
+        AND  vrs.trans_code != 'GP2'  --< 20151102 does it still work if we change this to: AND vrs.trans_code = 'M24'
         AND  vrc.amount != 0
         AND  vrc.reference_serie = 'CUST ORDER'
         AND  (vrc.code_c MEMBER OF SALES_GROUPS_COST_ OR vrc.code_c MEMBER OF SALES_GROUPS_COST_AND_REV_)
@@ -121,6 +122,7 @@ CURSOR get_ship_and_invoice_vr IS
                  AND sp.catalog_no = coi.catalog_no
       WHERE  vrs.company = COMPANY_
         AND  vrs.voucher_type = FIN_VOU_TYPE_
+        AND  vrs.trans_code != 'GP2'  --< 20151102 does it still work if we change this to: AND vrs.trans_code = 'M28'
         AND  vrs.amount != 0
         AND  (vrs.code_c MEMBER OF SALES_GROUPS_COST_AND_REV_ OR vrs.code_c MEMBER OF SALES_GROUPS_REV_)
         AND  vrs.account IN ( SELECT pcd.code_part_value FROM posting_ctrl_detail pcd
